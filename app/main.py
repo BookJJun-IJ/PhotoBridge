@@ -13,7 +13,10 @@ from app.importer import (
     validate_icloud_export,
 )
 
-app = Flask(__name__, static_folder="static", template_folder="templates")
+base_dir = os.path.dirname(os.path.abspath(__file__))
+app = Flask(__name__,
+            static_folder=os.path.join(base_dir, "static"),
+            template_folder=os.path.join(base_dir, "templates"))
 
 IMMICH_URL = os.environ.get("IMMICH_URL", "http://immich:3000")
 IMPORT_PATH = os.environ.get("IMPORT_PATH", "/import")
