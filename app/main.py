@@ -24,6 +24,11 @@ IMPORT_PATH = os.environ.get("IMPORT_PATH", "/import")
 import_manager = ImportManager()
 
 
+@app.route("/health")
+def health():
+    return "PhotoBridge OK", 200
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
