@@ -4,7 +4,7 @@ ARG TARGETARCH
 ARG IMMICH_GO_VERSION=0.31.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates && \
+    curl ca-certificates tini && \
     rm -rf /var/lib/apt/lists/*
 
 RUN ARCH="" && \
@@ -33,4 +33,8 @@ EXPOSE 80
 ENV IMMICH_URL=http://immich:3000
 ENV IMPORT_PATH=/import
 
+HEALTHCHECK --interval=60s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:80/ || exit 1
+
+ENTRYPOINT ["tini", "--"]
 CMD ["gunicorn", "--bind", "0.0.0.0:80", "--worker-class", "gthread", "--threads", "4", "--timeout", "86400", "--access-logfile", "-", "app.main:app"]
