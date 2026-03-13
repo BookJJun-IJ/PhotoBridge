@@ -5,6 +5,7 @@ from datetime import datetime
 
 import requests
 from flask import Flask, Response, jsonify, render_template, request
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.importer import (
     ImportManager,
@@ -17,6 +18,7 @@ base_dir = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__,
             static_folder=os.path.join(base_dir, "static"),
             template_folder=os.path.join(base_dir, "templates"))
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 IMMICH_URL = os.environ.get("IMMICH_URL", "http://immich:3000")
 IMPORT_PATH = os.environ.get("IMPORT_PATH", "/import")
