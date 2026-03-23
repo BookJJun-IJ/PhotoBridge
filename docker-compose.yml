@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  photobridge:
+    build: .
+    image: yundera/photobridge:latest
+    container_name: photobridge
+    restart: unless-stopped
+    ports:
+      - "3100:80"
+    volumes:
+      # Mount your Google Takeout ZIPs, iCloud export, or direct uploads here
+      - /DATA/Gallery/Import:/import
+    environment:
+      - IMMICH_URL=http://immich:3000
+      - IMPORT_PATH=/import
+    networks:
+      - pcs
+
+networks:
+  pcs:
+    external: true

@@ -1,0 +1,44 @@
+FROM python:3.12-slim
+
+ARG TARGETARCH
+ARG IMMICH_GO_VERSION=0.31.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates tini nginx && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN ARCH="" && \
+    case "${TARGETARCH}" in \
+      "amd64") ARCH="x86_64" ;; \
+      "arm64") ARCH="arm64" ;; \
+      *) ARCH="x86_64" ;; \
+    esac && \
+    curl -fSL "https://github.com/simulot/immich-go/releases/download/v${IMMICH_GO_VERSION}/immich-go_Linux_${ARCH}.tar.gz" \
+      -o /tmp/immich-go.tar.gz && \
+    tar -xzf /tmp/immich-go.tar.gz -C /usr/local/bin/ immich-go && \
+    chmod +x /usr/local/bin/immich-go && \
+    rm /tmp/immich-go.tar.gz
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app/ ./app/
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY start.sh /app/start.sh
+RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
+
+RUN mkdir -p /import /tmp/nginx-client-body /tmp/nginx-proxy \
+    /tmp/nginx-fastcgi /tmp/nginx-uwsgi /tmp/nginx-scgi
+
+EXPOSE 80
+
+ENV IMMICH_URL=http://immich:80
+ENV IMPORT_PATH=/import
+
+HEALTHCHECK --interval=60s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:80/health || exit 1
+
+ENTRYPOINT ["tini", "-g", "--"]
+CMD ["/app/start.sh"]
