@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import time
 from datetime import datetime
 
@@ -27,6 +28,7 @@ IMMICH_URL = os.environ.get("IMMICH_URL", "http://immich:80")
 IMPORT_PATH = os.environ.get("IMPORT_PATH", "/import")
 
 import_manager = ImportManager()
+merge_status = {}  # key: "{upload_id}/{filename}" → status dict
 
 
 @app.route("/health")
@@ -187,8 +189,6 @@ def upload_chunk():
     total_chunks = int(request.form.get("total_chunks", 1))
     upload_id = request.form.get("upload_id", "")
 
-    from app.importer import human_size
-
     if not upload_id:
         upload_id = "uploads/" + datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -204,9 +204,32 @@ def upload_chunk():
     chunk_path = os.path.join(chunks_dir, f"{chunk_index:06d}")
     chunk.save(chunk_path)
 
-    # If all chunks received, reassemble
+    # If all chunks received, start background merge
     received = len([f for f in os.listdir(chunks_dir) if not f.startswith(".")])
     if received >= total_chunks:
+        key = f"{upload_id}/{safe_name}"
+        merge_status[key] = {"status": "merging"}
+        threading.Thread(
+            target=_merge_chunks,
+            args=(upload_dir, safe_name, total_chunks, chunks_dir, key),
+            daemon=True,
+        ).start()
+        return jsonify({
+            "complete": False,
+            "merging": True,
+            "upload_dir": upload_id,
+        })
+
+    return jsonify({
+        "complete": False,
+        "upload_dir": upload_id,
+        "chunk_index": chunk_index,
+    })
+
+
+def _merge_chunks(upload_dir, safe_name, total_chunks, chunks_dir, key):
+    from app.importer import human_size
+    try:
         final_path = os.path.join(upload_dir, safe_name)
         with open(final_path, "wb") as out:
             for i in range(total_chunks):
@@ -219,31 +242,38 @@ def upload_chunk():
                         out.write(data)
                 os.remove(cp)
 
-        # Clean up chunks directory
         try:
             os.rmdir(chunks_dir)
-            chunks_parent = os.path.join(upload_dir, ".chunks")
+            chunks_parent = os.path.dirname(chunks_dir)
             if os.path.isdir(chunks_parent) and not os.listdir(chunks_parent):
                 os.rmdir(chunks_parent)
         except OSError:
             pass
 
         size = os.path.getsize(final_path)
-        return jsonify({
-            "complete": True,
-            "upload_dir": upload_id,
+        merge_status[key] = {
+            "status": "done",
             "file": {
                 "name": safe_name,
                 "size": size,
                 "size_human": human_size(size),
             },
-        })
+        }
+    except Exception as e:
+        merge_status[key] = {"status": "error", "error": str(e)}
 
-    return jsonify({
-        "complete": False,
-        "upload_dir": upload_id,
-        "chunk_index": chunk_index,
-    })
+
+@app.route("/api/upload/merge-status")
+def get_merge_status():
+    upload_id = request.args.get("upload_id", "")
+    filename = request.args.get("filename", "")
+    key = f"{upload_id}/{secure_filename(filename)}"
+    status = merge_status.get(key)
+    if not status:
+        return jsonify({"status": "not_found"}), 404
+    if status["status"] == "done":
+        merge_status.pop(key, None)
+    return jsonify(status)
 
 
 @app.route("/api/validate", methods=["POST"])

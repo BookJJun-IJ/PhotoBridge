@@ -571,6 +571,12 @@ async function uploadFiles(fileList) {
                     if (result.aborted) { c--; continue; }
                     if (result.error) throw new Error(result.error);
                     if (result.upload_dir) state.uploadDir = result.upload_dir;
+                    if (result.merging) {
+                        progressText.textContent = `Merging ${file.name}...`;
+                        const merged = await pollMergeStatus(state.uploadDir, file.name);
+                        if (merged.error) throw new Error(merged.error);
+                        if (merged.file) state.uploadedFiles.push(merged.file);
+                    }
                     if (result.complete && result.file) {
                         state.uploadedFiles.push(result.file);
                     }
@@ -673,6 +679,20 @@ function xhrUpload(url, formData, onProgress) {
         xhr.open('POST', url);
         xhr.send(formData);
     });
+}
+
+async function pollMergeStatus(uploadId, filename) {
+    while (true) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+            const resp = await fetch(`/api/upload/merge-status?upload_id=${encodeURIComponent(uploadId)}&filename=${encodeURIComponent(filename)}`);
+            const data = await resp.json();
+            if (data.status === 'done') return data;
+            if (data.status === 'error') return { error: data.error || 'Merge failed' };
+        } catch {
+            return { error: 'Network error while checking merge status' };
+        }
+    }
 }
 
 async function removeUploadedFile(filename) {
