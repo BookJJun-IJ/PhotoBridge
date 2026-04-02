@@ -510,8 +510,8 @@ function newImport() {
 
 // ─── Direct Upload ──────────────────────────────────────────────
 
-const CHUNK_SIZE = 80 * 1024 * 1024; // 80MB chunks (Cloudflare limit: 100MB)
-const PARALLEL_CHUNKS = 3;
+const CHUNK_SIZE = 30 * 1024 * 1024; // 30MB chunks
+const PARALLEL_CHUNKS = 5;
 const MAX_RETRIES = 3;
 
 function formatTime(seconds) {
@@ -573,7 +573,7 @@ async function uploadFiles(fileList) {
                         const elapsed = (now - uploadStartTime) / 1000;
                         const speed = currentTotal / elapsed;
                         const remaining = (totalSize - currentTotal) / speed;
-                        progressText.textContent = `Uploading ${file.name} (${completedChunks}/${totalChunks}) ${Math.min(pct, 99)}% · ${formatSpeed(speed)} · ${formatTime(remaining)} left`;
+                        progressText.textContent = `Uploading ${file.name} (${completedChunks}/${totalChunks}) ${Math.min(pct, 99)}% · ${formatSpeed(speed)} · ${formatTime(elapsed)} / ${formatTime(remaining)} left`;
                     }
                 }
 
@@ -645,7 +645,7 @@ async function uploadFiles(fileList) {
                             const elapsed = (now - uploadStartTime) / 1000;
                             const speed = currentTotal / elapsed;
                             const remaining = (totalSize - currentTotal) / speed;
-                            progressText.textContent = `Uploading ${file.name} (${i + 1}/${fileList.length}) ${pct}% · ${formatSpeed(speed)} · ${formatTime(remaining)} left`;
+                            progressText.textContent = `Uploading ${file.name} (${i + 1}/${fileList.length}) ${pct}% · ${formatSpeed(speed)} · ${formatTime(elapsed)} / ${formatTime(remaining)} left`;
                         }
                     });
 
