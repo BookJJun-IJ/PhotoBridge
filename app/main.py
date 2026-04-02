@@ -29,6 +29,8 @@ IMPORT_PATH = os.environ.get("IMPORT_PATH", "/import")
 
 import_manager = ImportManager()
 merge_status = {}  # key: "{upload_id}/{filename}" → status dict
+_merge_lock = threading.Lock()
+_merging_keys = set()
 
 
 @app.route("/health")
@@ -204,16 +206,22 @@ def upload_chunk():
     chunk_path = os.path.join(chunks_dir, f"{chunk_index:06d}")
     chunk.save(chunk_path)
 
-    # If all chunks received, start background merge
+    # If all chunks received, start background merge (with lock for parallel safety)
     received = len([f for f in os.listdir(chunks_dir) if not f.startswith(".")])
     if received >= total_chunks:
         key = f"{upload_id}/{safe_name}"
-        merge_status[key] = {"status": "merging"}
-        threading.Thread(
-            target=_merge_chunks,
-            args=(upload_dir, safe_name, total_chunks, chunks_dir, key),
-            daemon=True,
-        ).start()
+        should_merge = False
+        with _merge_lock:
+            if key not in _merging_keys:
+                _merging_keys.add(key)
+                should_merge = True
+        if should_merge:
+            merge_status[key] = {"status": "merging"}
+            threading.Thread(
+                target=_merge_chunks,
+                args=(upload_dir, safe_name, total_chunks, chunks_dir, key),
+                daemon=True,
+            ).start()
         return jsonify({
             "complete": False,
             "merging": True,
@@ -261,6 +269,9 @@ def _merge_chunks(upload_dir, safe_name, total_chunks, chunks_dir, key):
         }
     except Exception as e:
         merge_status[key] = {"status": "error", "error": str(e)}
+    finally:
+        with _merge_lock:
+            _merging_keys.discard(key)
 
 
 @app.route("/api/upload/merge-status")

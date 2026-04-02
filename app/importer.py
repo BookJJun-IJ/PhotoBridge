@@ -428,10 +428,40 @@ class ImportManager:
                 try:
                     with zipfile.ZipFile(fpath, 'r') as zf:
                         members = zf.namelist()
+                        total_members = len(members)
+
+                        # Check if ZIP has a common top-level folder
+                        top_dirs = set()
+                        has_root_files = False
+                        for m in members:
+                            parts = m.strip('/').split('/')
+                            if len(parts) == 1 and not m.endswith('/'):
+                                has_root_files = True
+                            elif len(parts) > 1:
+                                top_dirs.add(parts[0])
+
+                        # If files are at root (no common folder), create
+                        # a subfolder named after the ZIP file
+                        if has_root_files or len(top_dirs) > 1:
+                            zip_stem = os.path.splitext(name)[0]
+                            extract_dir = os.path.join(dirpath, zip_stem)
+                            os.makedirs(extract_dir, exist_ok=True)
+                            job.log_lines.append(
+                                f"[PhotoBridge] ZIP has no single root folder, extracting to '{zip_stem}/'"
+                            )
+                        else:
+                            extract_dir = dirpath
+
                         job.log_lines.append(
-                            f"[PhotoBridge] ZIP contains {len(members)} entries"
+                            f"[PhotoBridge] ZIP contains {total_members} entries, extracting..."
                         )
-                        zf.extractall(dirpath)
+                        for idx, member in enumerate(members, 1):
+                            zf.extract(member, extract_dir)
+                            if total_members >= 20 and idx % max(1, total_members // 5) == 0:
+                                pct = round(idx / total_members * 100)
+                                job.log_lines.append(
+                                    f"[PhotoBridge] Extracting... {idx}/{total_members} ({pct}%)"
+                                )
                     os.remove(fpath)
                     after = os.listdir(dirpath)
                     job.log_lines.append(

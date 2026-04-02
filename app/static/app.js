@@ -526,6 +526,8 @@ function newImport() {
 // ─── Direct Upload ──────────────────────────────────────────────
 
 const CHUNK_SIZE = 30 * 1024 * 1024; // 30MB chunks
+const PARALLEL_CHUNKS = 3;
+const MAX_RETRIES = 3;
 
 async function uploadFiles(fileList) {
     state.uploading = true;
@@ -546,59 +548,108 @@ async function uploadFiles(fileList) {
             const file = fileList[i];
 
             if (file.size > CHUNK_SIZE) {
-                // Chunked upload for large files
+                // Parallel chunked upload for large files
                 const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-                for (let c = 0; c < totalChunks; c++) {
-                    if (state.uploadPaused) await waitForResume();
+                const chunkProgress = new Array(totalChunks).fill(0);
+                let completedChunks = 0;
+                let nextChunk = 0;
+                let merging = false;
+                let uploadError = null;
 
-                    const start = c * CHUNK_SIZE;
-                    const end = Math.min(start + CHUNK_SIZE, file.size);
-                    const blob = file.slice(start, end);
-
-                    const fd = new FormData();
-                    fd.append('chunk', blob);
-                    fd.append('filename', file.name);
-                    fd.append('chunk_index', c);
-                    fd.append('total_chunks', totalChunks);
-                    if (state.uploadDir) fd.append('upload_id', state.uploadDir);
-
-                    const result = await xhrUpload('/api/upload/chunk', fd, (loaded) => {
-                        const pct = Math.round(((uploadedSize + start + loaded) / totalSize) * 100);
-                        progressFill.style.width = pct + '%';
-                        progressText.textContent = `Uploading ${file.name} (${c + 1}/${totalChunks})... ${pct}%`;
-                    });
-
-                    if (result.aborted) { c--; continue; }
-                    if (result.error) throw new Error(result.error);
-                    if (result.upload_dir) state.uploadDir = result.upload_dir;
-                    if (result.merging) {
-                        progressText.textContent = `Merging ${file.name}...`;
-                        const merged = await pollMergeStatus(state.uploadDir, file.name);
-                        if (merged.error) throw new Error(merged.error);
-                        if (merged.file) state.uploadedFiles.push(merged.file);
-                    }
-                    if (result.complete && result.file) {
-                        state.uploadedFiles.push(result.file);
+                function updateChunkProgress() {
+                    const totalUploaded = chunkProgress.reduce((a, b) => a + b, 0);
+                    const pct = Math.round(((uploadedSize + totalUploaded) / totalSize) * 100);
+                    progressFill.style.width = Math.min(pct, 100) + '%';
+                    if (completedChunks >= totalChunks) {
+                        progressText.textContent = `Processing ${file.name}...`;
+                    } else {
+                        progressText.textContent = `Uploading ${file.name} (${completedChunks}/${totalChunks})... ${Math.min(pct, 99)}%`;
                     }
                 }
+
+                // Send first chunk alone to get upload_dir
+                if (!state.uploadDir) {
+                    const firstResult = await uploadOneChunk(file, 0, totalChunks, chunkProgress, updateChunkProgress);
+                    if (firstResult.error) throw new Error(firstResult.error);
+                    if (firstResult.upload_dir) state.uploadDir = firstResult.upload_dir;
+                    if (firstResult.merging) merging = true;
+                    chunkProgress[0] = Math.min(CHUNK_SIZE, file.size);
+                    completedChunks++;
+                    nextChunk = 1;
+                    updateChunkProgress();
+                }
+
+                // Parallel workers for remaining chunks
+                async function worker() {
+                    while (!uploadError) {
+                        const c = nextChunk++;
+                        if (c >= totalChunks) return;
+                        if (state.uploadPaused) await waitForResume();
+
+                        const result = await uploadOneChunk(file, c, totalChunks, chunkProgress, updateChunkProgress);
+                        if (result.error) {
+                            uploadError = result.error;
+                            return;
+                        }
+                        if (result.upload_dir) state.uploadDir = result.upload_dir;
+                        if (result.merging) merging = true;
+                        const start = c * CHUNK_SIZE;
+                        chunkProgress[c] = Math.min(CHUNK_SIZE, file.size - start);
+                        completedChunks++;
+                        updateChunkProgress();
+                    }
+                }
+
+                const workerCount = Math.min(PARALLEL_CHUNKS, totalChunks - nextChunk);
+                const workers = [];
+                for (let w = 0; w < workerCount; w++) workers.push(worker());
+                await Promise.all(workers);
+
+                if (uploadError) throw new Error(uploadError);
+
+                // Wait for merge
+                if (merging) {
+                    progressText.textContent = `Merging ${file.name}...`;
+                    const merged = await pollMergeStatus(state.uploadDir, file.name);
+                    if (merged.error) throw new Error(merged.error);
+                    if (merged.file) state.uploadedFiles.push(merged.file);
+                }
             } else {
-                if (state.uploadPaused) await waitForResume();
+                // Single request for small files (with retry)
+                let lastError = null;
+                for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+                    if (state.uploadPaused) await waitForResume();
 
-                // Single request for small files
-                const fd = new FormData();
-                fd.append('files', file);
-                if (state.uploadDir) fd.append('upload_id', state.uploadDir);
+                    const fd = new FormData();
+                    fd.append('files', file);
+                    if (state.uploadDir) fd.append('upload_id', state.uploadDir);
 
-                const result = await xhrUpload('/api/upload', fd, (loaded) => {
-                    const pct = Math.round(((uploadedSize + loaded) / totalSize) * 100);
-                    progressFill.style.width = pct + '%';
-                    progressText.textContent = `Uploading ${file.name} (${i + 1}/${fileList.length})... ${pct}%`;
-                });
+                    const result = await xhrUpload('/api/upload', fd, (loaded) => {
+                        const pct = Math.round(((uploadedSize + loaded) / totalSize) * 100);
+                        progressFill.style.width = pct + '%';
+                        if (pct >= 100) {
+                            progressText.textContent = `Processing ${file.name}...`;
+                        } else {
+                            progressText.textContent = `Uploading ${file.name} (${i + 1}/${fileList.length})... ${pct}%`;
+                        }
+                    });
 
-                if (result.aborted) { i--; continue; }
-                if (result.error) throw new Error(result.error);
-                if (result.upload_dir) state.uploadDir = result.upload_dir;
-                if (result.files) state.uploadedFiles = state.uploadedFiles.concat(result.files);
+                    if (result.aborted) { attempt--; continue; }
+                    if (result.error) {
+                        lastError = result.error;
+                        if (attempt < MAX_RETRIES - 1) {
+                            progressText.textContent = `Retry ${attempt + 1}/${MAX_RETRIES} for ${file.name}...`;
+                            await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+                            continue;
+                        }
+                        break;
+                    }
+                    if (result.upload_dir) state.uploadDir = result.upload_dir;
+                    if (result.files) state.uploadedFiles = state.uploadedFiles.concat(result.files);
+                    lastError = null;
+                    break;
+                }
+                if (lastError) throw new Error(lastError);
             }
 
             uploadedSize += file.size;
@@ -693,6 +744,42 @@ async function pollMergeStatus(uploadId, filename) {
             return { error: 'Network error while checking merge status' };
         }
     }
+}
+
+async function uploadOneChunk(file, chunkIndex, totalChunks, chunkProgress, updateProgress) {
+    const start = chunkIndex * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, file.size);
+    const blob = file.slice(start, end);
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        if (state.uploadPaused) await waitForResume();
+
+        const fd = new FormData();
+        fd.append('chunk', blob);
+        fd.append('filename', file.name);
+        fd.append('chunk_index', chunkIndex);
+        fd.append('total_chunks', totalChunks);
+        if (state.uploadDir) fd.append('upload_id', state.uploadDir);
+
+        const result = await xhrUpload('/api/upload/chunk', fd, (loaded) => {
+            chunkProgress[chunkIndex] = loaded;
+            updateProgress();
+        });
+
+        if (result.aborted) {
+            attempt--;
+            continue;
+        }
+        if (result.error) {
+            if (attempt < MAX_RETRIES - 1) {
+                await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+                continue;
+            }
+            return result;
+        }
+        return result;
+    }
+    return { error: 'Max retries exceeded' };
 }
 
 async function removeUploadedFile(filename) {
