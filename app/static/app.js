@@ -510,7 +510,7 @@ function newImport() {
 
 // ─── Direct Upload ──────────────────────────────────────────────
 
-const CHUNK_SIZE = 30 * 1024 * 1024; // 30MB chunks
+const CHUNK_SIZE = 80 * 1024 * 1024; // 80MB chunks (Cloudflare limit: 100MB)
 const PARALLEL_CHUNKS = 3;
 const MAX_RETRIES = 3;
 
