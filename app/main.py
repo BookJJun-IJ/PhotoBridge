@@ -14,8 +14,6 @@ from app.importer import (
     ImportManager,
     list_import_files,
     validate_direct_upload,
-    validate_google_takeout,
-    validate_icloud_export,
 )
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -300,16 +298,10 @@ def validate():
         return jsonify({"error": "source_type is required"}), 400
     if not files:
         return jsonify({"error": "At least one file must be selected"}), 400
-    if source_type not in ("google-photos", "icloud", "direct"):
-        return jsonify({"error": "source_type must be 'google-photos', 'icloud', or 'direct'"}), 400
+    if source_type not in ("local", "direct"):
+        return jsonify({"error": "source_type must be 'local' or 'direct'"}), 400
 
-    if source_type == "google-photos":
-        result = validate_google_takeout(files, IMPORT_PATH)
-    elif source_type == "icloud":
-        result = validate_icloud_export(files, IMPORT_PATH)
-    else:
-        result = validate_direct_upload(files, IMPORT_PATH)
-
+    result = validate_direct_upload(files, IMPORT_PATH)
     return jsonify(result)
 
 
@@ -324,8 +316,8 @@ def start_import():
     if missing:
         return jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400
 
-    if data["source_type"] not in ("google-photos", "icloud", "direct"):
-        return jsonify({"error": "source_type must be 'google-photos', 'icloud', or 'direct'"}), 400
+    if data["source_type"] not in ("local", "direct"):
+        return jsonify({"error": "source_type must be 'local' or 'direct'"}), 400
 
     config = {
         "immich_url": data["immich_url"].rstrip("/"),

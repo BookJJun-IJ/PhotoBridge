@@ -1,7 +1,5 @@
 import os
-import re
 import subprocess
-import signal
 import threading
 import uuid
 import zipfile
@@ -60,157 +58,6 @@ def list_import_files(import_path="/import"):
     except FileNotFoundError:
         pass
     return items
-
-
-def validate_google_takeout(files, import_path="/import"):
-    """Validate Google Photos Takeout zip files."""
-    result = {
-        "valid": True,
-        "errors": [],
-        "warnings": [],
-        "albums": [],
-        "media_count": 0,
-        "json_count": 0,
-        "total_size": 0,
-        "total_size_human": "",
-    }
-
-    albums = set()
-
-    for filename in files:
-        filepath = safe_path(filename, import_path)
-
-        if not os.path.exists(filepath):
-            result["errors"].append(f"File not found: {filename}")
-            result["valid"] = False
-            continue
-
-        if not zipfile.is_zipfile(filepath):
-            result["errors"].append(f"Not a valid zip file: {filename}")
-            result["valid"] = False
-            continue
-
-        result["total_size"] += os.path.getsize(filepath)
-
-        has_google_photos_dir = False
-        entries_checked = 0
-
-        try:
-            with zipfile.ZipFile(filepath, 'r') as zf:
-                for entry in zf.namelist():
-                    if entry.startswith("Takeout/Google Photos/") or \
-                       entry.startswith("Takeout/Google Foto") or \
-                       entry.startswith("Takeout/Google "):
-                        has_google_photos_dir = True
-
-                        parts = entry.split("/")
-                        if len(parts) >= 4:
-                            album_name = parts[2]
-                            if album_name:
-                                albums.add(album_name)
-
-                        lower = entry.lower()
-                        ext = os.path.splitext(lower)[1]
-                        if ext in MEDIA_EXTENSIONS:
-                            result["media_count"] += 1
-                        elif lower.endswith('.json'):
-                            result["json_count"] += 1
-
-                    entries_checked += 1
-        except zipfile.BadZipFile:
-            result["errors"].append(f"Corrupted zip file: {filename}")
-            result["valid"] = False
-            continue
-
-        if not has_google_photos_dir and entries_checked > 0:
-            result["errors"].append(
-                f"{filename}: Missing 'Takeout/Google Photos/' directory structure. "
-                "This may not be a Google Photos Takeout archive."
-            )
-            result["valid"] = False
-
-    if result["media_count"] > 0 and result["json_count"] == 0:
-        result["warnings"].append(
-            "No JSON metadata files found. Photo dates and album info may be inaccurate."
-        )
-
-    if result["json_count"] > 0 and result["json_count"] < result["media_count"] * 0.5:
-        result["warnings"].append(
-            f"Only {result['json_count']} metadata files found for "
-            f"{result['media_count']} media files. Some photos may have missing metadata."
-        )
-
-    result["albums"] = sorted(albums)
-    result["total_size_human"] = human_size(result["total_size"])
-    return result
-
-
-def validate_icloud_export(files, import_path="/import"):
-    """Validate iCloud Photos export directory."""
-    result = {
-        "valid": True,
-        "errors": [],
-        "warnings": [],
-        "media_count": 0,
-        "csv_count": 0,
-        "total_size": 0,
-        "total_size_human": "",
-    }
-
-    for dirname in files:
-        dirpath = safe_path(dirname, import_path)
-
-        if os.path.isfile(dirpath):
-            # Could be a zip file from iCloud
-            if zipfile.is_zipfile(dirpath):
-                result["total_size"] += os.path.getsize(dirpath)
-                try:
-                    with zipfile.ZipFile(dirpath, 'r') as zf:
-                        for entry in zf.namelist():
-                            ext = os.path.splitext(entry.lower())[1]
-                            if ext in MEDIA_EXTENSIONS:
-                                result["media_count"] += 1
-                            elif ext == '.csv':
-                                result["csv_count"] += 1
-                except zipfile.BadZipFile:
-                    result["errors"].append(f"Corrupted zip file: {dirname}")
-                    result["valid"] = False
-                continue
-            else:
-                result["errors"].append(f"Not a directory or zip: {dirname}")
-                result["valid"] = False
-                continue
-
-        if not os.path.isdir(dirpath):
-            result["errors"].append(f"Not found: {dirname}")
-            result["valid"] = False
-            continue
-
-        for root, _dirs, filenames in os.walk(dirpath):
-            for fname in filenames:
-                fpath = os.path.join(root, fname)
-                ext = os.path.splitext(fname.lower())[1]
-                if ext in MEDIA_EXTENSIONS:
-                    result["media_count"] += 1
-                    try:
-                        result["total_size"] += os.path.getsize(fpath)
-                    except OSError:
-                        pass
-                elif ext == '.csv':
-                    result["csv_count"] += 1
-
-    if result["media_count"] == 0:
-        result["errors"].append("No media files found in the selected files/directory.")
-        result["valid"] = False
-
-    if result["csv_count"] == 0 and result["media_count"] > 0:
-        result["warnings"].append(
-            "No CSV metadata files found. Album information and some dates "
-            "may not be imported correctly."
-        )
-
-    result["total_size_human"] = human_size(result["total_size"])
-    return result
 
 
 def validate_direct_upload(files, import_path="/import"):
@@ -339,7 +186,60 @@ class ImportManager:
                 pass
         return True
 
-    def _build_command(self, config):
+    def _detect_source(self, config):
+        """Auto-detect if files contain a Google Takeout structure.
+
+        Checks ZIP contents and directory structure for
+        'Takeout/Google Photos' (or localized variants).
+        """
+        import_base = config.get("import_path", "/import")
+        for f in config["files"]:
+            fpath = safe_path(f, import_base)
+
+            # Check ZIP files directly
+            if os.path.isfile(fpath) and zipfile.is_zipfile(fpath):
+                if self._is_takeout_zip(fpath):
+                    return "google-photos"
+                continue
+
+            if not os.path.isdir(fpath):
+                continue
+
+            # Check ZIPs inside the directory
+            for name in os.listdir(fpath):
+                zpath = os.path.join(fpath, name)
+                if name.lower().endswith('.zip') and os.path.isfile(zpath) \
+                        and zipfile.is_zipfile(zpath):
+                    if self._is_takeout_zip(zpath):
+                        return "google-photos"
+
+            # Check extracted directory structure
+            for root, dirs, _files in os.walk(fpath):
+                depth = root.replace(fpath, "").count(os.sep)
+                if depth > 3:
+                    dirs.clear()
+                    continue
+                if os.path.basename(root) == "Takeout":
+                    for d in dirs:
+                        if d.startswith("Google Photo") or \
+                           d.startswith("Google Foto"):
+                            return "google-photos"
+        return "folder"
+
+    @staticmethod
+    def _is_takeout_zip(filepath):
+        """Check if a ZIP file contains Google Takeout structure."""
+        try:
+            with zipfile.ZipFile(filepath, 'r') as zf:
+                for entry in zf.namelist()[:200]:
+                    if entry.startswith("Takeout/Google Photo") or \
+                       entry.startswith("Takeout/Google Foto"):
+                        return True
+        except (zipfile.BadZipFile, OSError):
+            pass
+        return False
+
+    def _build_command(self, config, detected_source="folder"):
         """Build the immich-go command from configuration."""
         cmd = ["/usr/local/bin/immich-go"]
 
@@ -347,12 +247,8 @@ class ImportManager:
         cmd.extend(["--log-level", "INFO"])
 
         cmd.append("upload")
-
-        source_type = config["source_type"]
-        if source_type == "google-photos":
+        if detected_source == "google-photos":
             cmd.append("from-google-photos")
-        elif source_type == "icloud":
-            cmd.append("from-icloud")
         else:
             cmd.append("from-folder")
 
@@ -367,21 +263,7 @@ class ImportManager:
 
         options = config.get("options", {})
 
-        if source_type == "google-photos":
-            if not options.get("include_archived", True):
-                cmd.append("--include-archived=false")
-            if not options.get("include_partner", True):
-                cmd.append("--include-partner=false")
-            if options.get("include_trashed", False):
-                cmd.append("--include-trashed=true")
-            if not options.get("sync_albums", True):
-                cmd.append("--sync-albums=false")
-            if options.get("include_unmatched", False):
-                cmd.append("--include-unmatched=true")
-        elif source_type == "icloud":
-            if options.get("memories", False):
-                cmd.append("--memories")
-        elif source_type == "direct":
+        if detected_source != "google-photos":
             folder_album = options.get("folder_as_album", "FOLDER")
             if folder_album and folder_album != "NONE":
                 cmd.append(f"--folder-as-album={folder_album}")
@@ -398,9 +280,7 @@ class ImportManager:
         return cmd
 
     def _extract_zips(self, job):
-        """Extract ZIP files in the upload directory for direct uploads."""
-        if job.config.get("source_type") != "direct":
-            return
+        """Extract ZIP files in the import directory before importing."""
 
         import_base = job.config.get("import_path", "/import")
         for f in job.config["files"]:
@@ -476,8 +356,15 @@ class ImportManager:
         job.start_time = datetime.now()
 
         try:
-            self._extract_zips(job)
-            cmd = self._build_command(job.config)
+            detected = self._detect_source(job.config)
+            if detected != "google-photos":
+                self._extract_zips(job)
+            if detected == "google-photos":
+                job.log_lines.append(
+                    "[PhotoBridge] Detected Google Photos Takeout structure "
+                    "— using google-photos importer for metadata preservation"
+                )
+            cmd = self._build_command(job.config, detected)
 
             # Log full command with masked API key
             display_cmd = []

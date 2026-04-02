@@ -5,7 +5,7 @@ let state = {
     connected: false,
     immichUrl: '',
     apiKey: '',
-    sourceType: 'google-photos',
+    sourceType: 'local',
     selectedFiles: [],
     validationResult: null,
     jobId: null,
@@ -107,20 +107,15 @@ function goToStep(step) {
 
     if (step === 2) {
         updateSourceUI();
-        if (state.sourceType !== 'direct') refreshFiles();
-        updateSourceOptions();
+        if (state.sourceType === 'local') refreshFiles();
     }
     if (step === 3) {
         renderValidationResults();
-        updateSourceOptions();
     }
 }
 
 function updateSourceOptions() {
-    const st = state.sourceType;
-    document.getElementById('google-options').classList.toggle('hidden', st !== 'google-photos');
-    document.getElementById('icloud-options').classList.toggle('hidden', st !== 'icloud');
-    document.getElementById('direct-options').classList.toggle('hidden', st !== 'direct');
+    // Options are now shared for both local and direct source types
 }
 
 function updateSourceUI() {
@@ -209,7 +204,7 @@ async function refreshFiles() {
         const data = await resp.json();
 
         if (!data.files || data.files.length === 0) {
-            listEl.innerHTML = '<div class="empty">No files found. Place your Takeout ZIP files in the /import volume and click Refresh.</div>';
+            listEl.innerHTML = '<div class="empty">No files found. Place your files in the /import volume and click Refresh.</div>';
             return;
         }
 
@@ -374,20 +369,10 @@ async function startImport() {
     const dryRun = document.getElementById('opt-dry-run').checked;
     const options = {};
 
-    if (state.sourceType === 'google-photos') {
-        options.sync_albums = document.getElementById('opt-sync-albums').checked;
-        options.include_archived = document.getElementById('opt-include-archived').checked;
-        options.include_partner = document.getElementById('opt-include-partner').checked;
-        options.include_trashed = document.getElementById('opt-include-trashed').checked;
-        options.include_unmatched = document.getElementById('opt-include-unmatched').checked;
-    } else if (state.sourceType === 'icloud') {
-        options.memories = document.getElementById('opt-memories').checked;
-    } else if (state.sourceType === 'direct') {
-        const folderAlbum = document.getElementById('opt-folder-album').checked;
-        options.folder_as_album = folderAlbum
-            ? document.getElementById('opt-album-mode').value
-            : 'NONE';
-    }
+    const folderAlbum = document.getElementById('opt-folder-album').checked;
+    options.folder_as_album = folderAlbum
+        ? document.getElementById('opt-album-mode').value
+        : 'NONE';
 
     const dateRange = document.getElementById('opt-date-range').value.trim();
     if (dateRange) options.date_range = dateRange;
