@@ -514,6 +514,24 @@ const CHUNK_SIZE = 80 * 1024 * 1024; // 80MB chunks (Cloudflare limit: 100MB)
 const PARALLEL_CHUNKS = 3;
 const MAX_RETRIES = 3;
 
+function formatTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) return '--:--';
+    seconds = Math.round(seconds);
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    return `${m}:${String(s).padStart(2,'0')}`;
+}
+
+function formatSpeed(bytesPerSec) {
+    if (!isFinite(bytesPerSec) || bytesPerSec <= 0) return '-- MB/s';
+    if (bytesPerSec >= 1024 * 1024 * 1024) return (bytesPerSec / (1024*1024*1024)).toFixed(1) + ' GB/s';
+    if (bytesPerSec >= 1024 * 1024) return (bytesPerSec / (1024*1024)).toFixed(1) + ' MB/s';
+    if (bytesPerSec >= 1024) return (bytesPerSec / 1024).toFixed(0) + ' KB/s';
+    return bytesPerSec.toFixed(0) + ' B/s';
+}
+
 async function uploadFiles(fileList) {
     state.uploading = true;
     updateValidateButton();
@@ -527,6 +545,8 @@ async function uploadFiles(fileList) {
     let totalSize = 0;
     let uploadedSize = 0;
     for (let i = 0; i < fileList.length; i++) totalSize += fileList[i].size;
+
+    const uploadStartTime = Date.now();
 
     try {
         for (let i = 0; i < fileList.length; i++) {
@@ -543,12 +563,17 @@ async function uploadFiles(fileList) {
 
                 function updateChunkProgress() {
                     const totalUploaded = chunkProgress.reduce((a, b) => a + b, 0);
-                    const pct = Math.round(((uploadedSize + totalUploaded) / totalSize) * 100);
+                    const currentTotal = uploadedSize + totalUploaded;
+                    const pct = Math.round((currentTotal / totalSize) * 100);
                     progressFill.style.width = Math.min(pct, 100) + '%';
                     if (completedChunks >= totalChunks) {
                         progressText.textContent = `Processing ${file.name}...`;
                     } else {
-                        progressText.textContent = `Uploading ${file.name} (${completedChunks}/${totalChunks})... ${Math.min(pct, 99)}%`;
+                        const now = Date.now();
+                        const elapsed = (now - uploadStartTime) / 1000;
+                        const speed = currentTotal / elapsed;
+                        const remaining = (totalSize - currentTotal) / speed;
+                        progressText.textContent = `Uploading ${file.name} (${completedChunks}/${totalChunks}) ${Math.min(pct, 99)}% · ${formatSpeed(speed)} · ${formatTime(remaining)} left`;
                     }
                 }
 
@@ -610,12 +635,17 @@ async function uploadFiles(fileList) {
                     if (state.uploadDir) fd.append('upload_id', state.uploadDir);
 
                     const result = await xhrUpload('/api/upload', fd, (loaded) => {
-                        const pct = Math.round(((uploadedSize + loaded) / totalSize) * 100);
+                        const currentTotal = uploadedSize + loaded;
+                        const pct = Math.round((currentTotal / totalSize) * 100);
                         progressFill.style.width = pct + '%';
                         if (pct >= 100) {
                             progressText.textContent = `Processing ${file.name}...`;
                         } else {
-                            progressText.textContent = `Uploading ${file.name} (${i + 1}/${fileList.length})... ${pct}%`;
+                            const now = Date.now();
+                            const elapsed = (now - uploadStartTime) / 1000;
+                            const speed = currentTotal / elapsed;
+                            const remaining = (totalSize - currentTotal) / speed;
+                            progressText.textContent = `Uploading ${file.name} (${i + 1}/${fileList.length}) ${pct}% · ${formatSpeed(speed)} · ${formatTime(remaining)} left`;
                         }
                     });
 
@@ -640,7 +670,9 @@ async function uploadFiles(fileList) {
             uploadedSize += file.size;
         }
 
-        progressText.textContent = `Uploaded ${fileList.length} file(s) successfully`;
+        const totalElapsed = formatTime((Date.now() - uploadStartTime) / 1000);
+        const avgSpeed = formatSpeed(totalSize / ((Date.now() - uploadStartTime) / 1000));
+        progressText.textContent = `Uploaded ${fileList.length} file(s) in ${totalElapsed} (${avgSpeed})`;
         document.getElementById('btn-pause').classList.add('hidden');
         setTimeout(() => progressEl.classList.add('hidden'), 2000);
 
